@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visualizing Stacks: Undo/Redo Engine</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Google Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            500: '#06b6d4',
+                            600: '#0891b2',
+                            900: '#164e63',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar styling for technical feel */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.6);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(51, 65, 85, 0.8);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(71, 85, 105, 1);
+        }
+
+        /* Glassmorphism utility */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* Dynamic stack animation classes */
+        @keyframes pushIn {
+            0% { opacity: 0; transform: translateY(-16px) scale(0.95); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes popOut {
+            0% { opacity: 1; transform: scale(1); }
+            100% { opacity: 0; transform: translateY(-20px) scale(0.9); }
+        }
+        .animate-push {
+            animation: pushIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .animate-pop {
+            animation: popOut 0.25s cubic-bezier(0.7, 0, 0.84, 0) forwards;
+        }
+
+        .stack-container-bottom-up {
+            display: flex;
+            flex-direction: column-reverse;
+        }
+    </style>
+</head>
+<body class="h-full flex flex-col font-sans overflow-hidden bg-slate-950 text-slate-100 antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+
+    <!-- Top Navigation Header -->
+    <header class="h-14 border-b border-slate-800/80 px-4 flex items-center justify-between glass-panel z-20 shrink-0">
+        <div class="flex items-center space-x-3">
+            <div class="p-2 bg-gradient-to-tr from-cyan-600 to-blue-600 rounded-lg shadow-lg shadow-cyan-500/20">
+                <i data-lucide="layers" class="w-5 h-5 text-white"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-sm sm:text-base text-slate-100 flex items-center gap-2">
+                    LIFO Memory Engine <span class="text-xs font-mono px-2 py-0.5 rounded bg-cyan-950 border border-cyan-800 text-cyan-400">Interactive Demo</span>
+                </h1>
+                <p class="text-xs text-slate-400 hidden sm:block">Visualizing Undo/Redo Dual-Stack Data Structures</p>
+            </div>
+        </div>
+
+        <!-- Global Metrics Bar -->
+        <div class="flex items-center space-x-2 sm:space-x-6 text-xs font-mono">
+            <div class="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-md border border-slate-800">
+                <span class="text-slate-400">Undo Size:</span>
+                <span id="metric-undo-count" class="font-bold text-cyan-400">0</span>
+            </div>
+            <div class="flex items-center space-x-1.5 bg-slate-900/80 px-2.5 py-1 rounded-md border border-slate-800">
+                <span class="text-slate-400">Redo Size:</span>
+                <span id="metric-redo-count" class="font-bold text-purple-400">0</span>
+            </div>
+            <button id="btn-toggle-speed" class="hidden sm:flex items-center space-x-1 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-white transition-colors">
+                <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+                <span id="speed-label">Normal Speed</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Workspace Grid -->
+    <main class="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden gap-0">
+        
+        <!-- LEFT PANEL: Text Editor & Execution Console (7 Cols) -->
+        <section class="lg:col-span-7 flex flex-col border-b lg:border-b-0 lg:border-r border-slate-800/80 h-full overflow-hidden bg-slate-950/50">
+            
+            <!-- Editor Toolbar -->
+            <div class="p-3 bg-slate-900/60 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                <div class="flex items-center space-x-1.5">
+                    <!-- Undo Button -->
+                    <button id="btn-undo" title="Undo (Ctrl+Z)" disabled 
+                        class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium text-slate-200 border border-slate-700/80 flex items-center gap-1.5 transition-all active:scale-95">
+                        <i data-lucide="undo-2" class="w-3.5 h-3.5 text-cyan-400"></i>
+                        <span>Undo</span>
+                        <kbd class="hidden sm:inline-block ml-1 px-1.5 py-0.2 bg-slate-950 text-[10px] text-slate-400 rounded border border-slate-800">Ctrl+Z</kbd>
+                    </button>
+
+                    <!-- Redo Button -->
+                    <button id="btn-redo" title="Redo (Ctrl+Y)" disabled 
+                        class="px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-medium text-slate-200 border border-slate-700/80 flex items-center gap-1.5 transition-all active:scale-95">
+                        <i data-lucide="redo-2" class="w-3.5 h-3.5 text-purple-400"></i>
+                        <span>Redo</span>
+                        <kbd class="hidden sm:inline-block ml-1 px-1.5 py-0.2 bg-slate-950 text-[10px] text-slate-400 rounded border border-slate-800">Ctrl+Y</kbd>
+                    </button>
+
+                    <div class="h-4 w-px bg-slate-800 mx-1"></div>
+
+                    <!-- Explicit Save Frame Button -->
+                    <button id="btn-snapshot" title="Commit current state to Stack"
+                        class="px-3 py-1.5 rounded-md bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/80 text-xs font-medium flex items-center gap-1.5 transition-all active:scale-95">
+                        <i data-lucide="save" class="w-3.5 h-3.5"></i>
+                        <span>Snapshot Frame</span>
+                    </button>
+                </div>
+
+                <!-- Utilities Dropdown / Preset actions -->
+                <div class="flex items-center space-x-2">
+                    <button id="btn-sample" class="px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700/70 transition-colors flex items-center gap-1">
+                        <i data-lucide="sparkles" class="w-3.5 h-3.5 text-amber-400"></i>
+                        <span>Load Story Preset</span>
+                    </button>
+                    <button id="btn-clear" title="Clear Editor" class="px-2 py-1.5 rounded-md bg-slate-800 hover:bg-rose-950/60 hover:text-rose-300 text-xs text-slate-400 border border-slate-700/70 transition-colors">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Text Area Input Container -->
+            <div class="flex-1 p-4 relative flex flex-col min-h-[220px]">
+                <textarea id="editor-textarea" 
+                    placeholder="Type here to observe live memory allocation... Typing pauses auto-commit state to the Undo stack."
+                    class="w-full h-full bg-slate-900/40 text-slate-100 placeholder-slate-600 font-mono text-sm p-4 rounded-lg border border-slate-800 focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/30 outline-none resize-none transition-all leading-relaxed"></textarea>
+                
+                <!-- Editor Footer Stats -->
+                <div class="mt-2 flex items-center justify-between text-xs text-slate-500 font-mono px-1">
+                    <div class="flex items-center gap-3">
+                        <span id="stat-words">0 words</span>
+                        <span>•</span>
+                        <span id="stat-chars">0 characters</span>
+                    </div>
+                    <div id="typing-indicator" class="opacity-0 transition-opacity flex items-center gap-1.5 text-cyan-400">
+                        <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
+                        <span>Debouncing push operation...</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- LOWER HALF: LIFO Execution & Simulation Log -->
+            <div class="h-52 border-t border-slate-800/80 bg-slate-950 flex flex-col shrink-0">
+                <div class="px-4 py-2 bg-slate-900/80 border-b border-slate-800/60 flex items-center justify-between">
+                    <div class="flex items-center space-x-2">
+                        <i data-lucide="terminal" class="w-4 h-4 text-emerald-400"></i>
+                        <h3 class="text-xs font-mono font-semibold uppercase tracking-wider text-slate-300">Stack Execution Trace Log</h3>
+                    </div>
+                    <button id="btn-clear-log" class="text-[11px] font-mono text-slate-500 hover:text-slate-300">Clear Console</button>
+                </div>
+                <!-- Console Output Container -->
+                <div id="console-log" class="flex-1 p-3 font-mono text-xs overflow-y-auto space-y-1.5 bg-slate-950">
+                    <div class="text-slate-500 italic">[SYSTEM] Engine initialized. Type into the editor or load a preset to start tracking memory allocations.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- RIGHT PANEL: Visual Dual-Stack Inspection Dashboards (5 Cols) -->
+        <section class="lg:col-span-5 h-full flex flex-col bg-slate-900/30 overflow-hidden">
+            
+            <!-- Dashboard Title / Current Active State Banner -->
+            <div class="p-3 bg-slate-900/80 border-b border-slate-800/80 flex items-center justify-between shrink-0">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="cpu" class="w-4 h-4 text-cyan-400"></i>
+                    <h2 class="text-xs font-mono font-semibold uppercase tracking-wider text-slate-200">Memory Visualizer</h2>
+                </div>
+                <span class="text-[11px] font-mono text-slate-400 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">LIFO Context</span>
+            </div>
+
+            <!-- Active Pointer State Banner -->
+            <div class="px-4 py-2.5 bg-slate-950/80 border-b border-slate-800/80 flex items-center justify-between text-xs font-mono shrink-0">
+                <div class="text-slate-400">Active State Pointer:</div>
+                <div id="active-pointer-display" class="font-medium text-cyan-300 truncate max-w-[200px] bg-cyan-950/40 border border-cyan-800/60 px-2 py-0.5 rounded">
+                    S_0 (Empty Initial)
+                </div>
+            </div>
+
+            <!-- Dual Stack Containers Grid -->
+            <div class="flex-1 grid grid-cols-2 gap-3 p-3 overflow-hidden min-h-0">
+                
+                <!-- UNDO STACK PANEL -->
+                <div class="flex flex-col bg-slate-950/60 border border-slate-800 rounded-lg overflow-hidden">
+                    <!-- Header -->
+                    <div class="px-3 py-2 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0">
+                        <div class="flex items-center space-x-1.5">
+                            <span class="w-2 h-2 rounded-full bg-cyan-400"></span>
+                            <span class="text-xs font-mono font-bold text-slate-200">UNDO STACK</span>
+                        </div>
+                        <span class="text-[10px] font-mono text-cyan-400 font-semibold uppercase">Primary (LIFO)</span>
+                    </div>
+                    <!-- Stack Viewport (Renders from bottom up visually) -->
+                    <div class="flex-1 p-2 overflow-y-auto flex flex-col justify-end">
+                        <div id="undo-stack-list" class="stack-container-bottom-up space-y-2 space-y-reverse w-full">
+                            <!-- Populated dynamically -->
+                            <div class="text-center py-8 text-xs text-slate-600 font-mono italic">Stack Empty</div>
+                        </div>
+                    </div>
+                    <div class="p-1.5 bg-slate-900/40 border-t border-slate-800/50 text-[10px] font-mono text-center text-slate-500">
+                        Top of Stack (POP Target) ↑
+                    </div>
+                </div>
+
+                <!-- REDO STACK PANEL -->
+                <div class="flex flex-col bg-slate-950/60 border border-slate-800 rounded-lg overflow-hidden">
+                    <!-- Header -->
+                    <div class="px-3 py-2 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0">
+                        <div class="flex items-center space-x-1.5">
+                            <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                            <span class="text-xs font-mono font-bold text-slate-200">REDO STACK</span>
+                        </div>
+                        <span class="text-[10px] font-mono text-purple-400 font-semibold uppercase">Forward Cache</span>
+                    </div>
+                    <!-- Stack Viewport (Renders from bottom up visually) -->
+                    <div class="flex-1 p-2 overflow-y-auto flex flex-col justify-end">
+                        <div id="redo-stack-list" class="stack-container-bottom-up space-y-2 space-y-reverse w-full">
+                            <!-- Populated dynamically -->
+                            <div class="text-center py-8 text-xs text-slate-600 font-mono italic">Stack Empty</div>
+                        </div>
+                    </div>
+                    <div class="p-1.5 bg-slate-900/40 border-t border-slate-800/50 text-[10px] font-mono text-center text-slate-500">
+                        Top of Stack (REDO Target) ↑
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Algorithm Explanation Footer -->
+            <div class="p-3 bg-slate-950 border-t border-slate-800 text-[11px] font-mono text-slate-400 shrink-0">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="text-slate-300 font-semibold flex items-center gap-1">
+                        <i data-lucide="book-open" class="w-3.5 h-3.5 text-amber-400"></i> LIFO Invariant Rules:
+                    </span>
+                </div>
+                <p class="text-slate-500 text-[10px] leading-relaxed">
+                    1. Direct typing pushes current state to <span class="text-cyan-400">Undo Stack</span> & clears <span class="text-purple-400">Redo Stack</span>.<br>
+                    2. <span class="text-cyan-400">Undo</span> pops top state into Redo Stack.<br>
+                    3. <span class="text-purple-400">Redo</span> pops top forward state back into Undo Stack.
+                </p>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Inspection Modal / Tooltip Overlay for Stack Frames -->
+    <div id="frame-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-xl max-w-lg w-full p-5 shadow-2xl space-y-4">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div class="flex items-center space-x-2">
+                    <i data-lucide="file-text" class="w-5 h-5 text-cyan-400"></i>
+                    <h3 id="modal-title" class="font-mono font-bold text-slate-100 text-sm">Stack Frame Snapshot</h3>
+                </div>
+                <button id="btn-close-modal" class="text-slate-400 hover:text-white transition-colors">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            
+            <div class="space-y-2">
+                <div class="text-xs font-mono text-slate-400 flex justify-between">
+                    <span>Frame Timestamp: <strong id="modal-timestamp" class="text-slate-200">--:--:--</strong></span>
+                    <span>State Index: <strong id="modal-index" class="text-cyan-400">S_0</strong></span>
+                </div>
+                <div class="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs text-slate-200 min-h-[100px] max-h-[250px] overflow-y-auto whitespace-pre-wrap" id="modal-content">
+                    -- Empty Content --
+                </div>
+            </div>
+
+            <div class="flex justify-end pt-2">
+                <button id="btn-restore-frame" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-medium text-xs rounded-lg transition-colors flex items-center gap-1.5">
+                    <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+                    <span>Jump Direct to State</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application JavaScript Logic -->
+    <script>
+        // State Frame Constructor
+        class StateFrame {
+            constructor(text, actionType = 'USER_EDIT', id = null) {
+                this.id = id || 'S_' + Math.floor(1000 + Math.random() * 9000);
+                this.text = text;
+                this.timestamp = new Date().toLocaleTimeString();
+                this.actionType = actionType;
+            }
+        }
+
+        // Two-Stack Manager Engine Architecture
+        class StackManagerEngine {
+            constructor() {
+                this.currentState = new StateFrame("", "INIT");
+                this.undoStack = [];
+                this.redoStack = [];
+                this.subscribers = [];
+            }
+
+            subscribe(callback) {
+                this.subscribers.push(callback);
+            }
+
+            notify(actionLogMessage = null, highlightStack = null) {
+                this.subscribers.forEach(cb => cb(this, actionLogMessage, highlightStack));
+            }
+
+            // PUSH Operation (New text state generated)
+            commitState(newText, actionType = 'TYPING') {
+                if (newText === this.currentState.text) return; // No duplicate states
+
+                // Push current active state to Undo Stack
+                this.undoStack.push(this.currentState);
+                
+                // Create new active state
+                this.currentState = new StateFrame(newText, actionType);
+
+                // Invalidate Redo stack on new edits (LIFO invariant rule)
+                const clearedRedoCount = this.redoStack.length;
+                this.redoStack = [];
+
+                let logMsg = `[PUSH] Saved frame (${this.undoStack[this.undoStack.length - 1].id}) to Undo Stack.`;
+                if (clearedRedoCount > 0) {
+                    logMsg += ` Invalidated ${clearedRedoCount} frame(s) in Redo Stack.`;
+                }
+
+                this.notify(logMsg, 'undo');
+            }
+
+            // POP from Undo Stack into Redo Stack
+            undo() {
+                if (this.undoStack.length === 0) return;
+
+                // Push current state to Redo Stack
+                this.redoStack.push(this.currentState);
+
+                // Pop previous state from Undo Stack to become current
+                const poppedState = this.undoStack.pop();
+                this.currentState = poppedState;
+
+                this.notify(`[POP UNDO] Restored frame (${poppedState.id}) from Undo Stack. Cached current state to Redo Stack.`, 'undo');
+            }
+
+            // POP from Redo Stack back into Undo Stack
+            redo() {
+                if (this.redoStack.length === 0) return;
+
+                // Push current state to Undo Stack
+                this.undoStack.push(this.currentState);
+
+                // Pop top forward state from Redo Stack to become current
+                const poppedState = this.redoStack.pop();
+                this.currentState = poppedState;
+
+                this.notify(`[POP REDO] Restored forward frame (${poppedState.id}) from Redo Stack. Pushed prior to Undo Stack.`, 'redo');
+            }
+
+            clearAll() {
+                this.currentState = new StateFrame("", "CLEAR");
+                this.undoStack = [];
+                this.redoStack = [];
+                this.notify(`[RESET] Memory stacks cleared. Reset to blank state.`, 'system');
+            }
+
+            jumpToState(frame) {
+                // Save state before direct jump
+                this.commitState(frame.text, 'JUMP_RESTORE');
+                this.notify(`[JUMP] Restored historical context snapshot (${frame.id}).`, 'system');
+            }
+        }
+
+        // Initialize Application
+        document.addEventListener('DOMContentLoaded', () => {
+            // Initialize Lucide icons
+            lucide.createIcons();
+
+            // Core Instances
+            const engine = new StackManagerEngine();
+            let debounceTimer = null;
+            let currentSelectedFrameForModal = null;
+
+            // DOM Elements
+            const editorArea = document.getElementById('editor-textarea');
+            const btnUndo = document.getElementById('btn-undo');
+            const btnRedo = document.getElementById('btn-redo');
+            const btnSnapshot = document.getElementById('btn-snapshot');
+            const btnSample = document.getElementById('btn-sample');
+            const btnClear = document.getElementById('btn-clear');
+            const btnClearLog = document.getElementById('btn-clear-log');
+            
+            const metricUndoCount = document.getElementById('metric-undo-count');
+            const metricRedoCount = document.getElementById('metric-redo-count');
+            const statWords = document.getElementById('stat-words');
+            const statChars = document.getElementById('stat-chars');
+            const typingIndicator = document.getElementById('typing-indicator');
+
+            const consoleLog = document.getElementById('console-log');
+            const activePointerDisplay = document.getElementById('active-pointer-display');
+            const undoStackList = document.getElementById('undo-stack-list');
+            const redoStackList = document.getElementById('redo-stack-list');
+
+            // Modal elements
+            const modal = document.getElementById('frame-modal');
+            const modalTitle = document.getElementById('modal-title');
+            const modalTimestamp = document.getElementById('modal-timestamp');
+            const modalIndex = document.getElementById('modal-index');
+            const modalContent = document.getElementById('modal-content');
+            const btnCloseModal = document.getElementById('btn-close-modal');
+            const btnRestoreFrame = document.getElementById('btn-restore-frame');
+
+            // Sample story content presets
+            const sampleStorySteps = [
+                "The algorithm began in silence.",
+                "The algorithm began in silence. Each node clicked into memory.",
+                "The algorithm began in silence. Each node clicked into memory like gears in a clockwork tower.",
+                "The algorithm began in silence. Each node clicked into memory like gears in a clockwork tower, preserving every state perfectly."
+            ];
+            let sampleStepIndex = 0;
+
+            // --- Render Log Entry ---
+            function appendLog(message, type = 'info') {
+                const entry = document.createElement('div');
+                const timeStr = new Date().toLocaleTimeString();
+                
+                let colorClass = 'text-slate-400';
+                if (message.includes('[PUSH]')) colorClass = 'text-emerald-400';
+                else if (message.includes('[POP UNDO]')) colorClass = 'text-cyan-400';
+                else if (message.includes('[POP REDO]')) colorClass = 'text-purple-400';
+                else if (message.includes('[RESET]') || message.includes('[SYSTEM]')) colorClass = 'text-amber-400';
+
+                entry.className = `flex items-start space-x-2 py-0.5 border-b border-slate-900/60 leading-tight ${colorClass}`;
+                entry.innerHTML = `
+                    <span class="text-slate-600 select-none">[${timeStr}]</span>
+                    <span>${escapeHtml(message)}</span>
+                `;
+                
+                consoleLog.appendChild(entry);
+                consoleLog.scrollTop = consoleLog.scrollHeight;
+            }
+
+            function escapeHtml(text) {
+                return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+
+            // --- Stack Viewports UI Renderer ---
+            function renderStackUI(engineInstance, lastLogMessage, highlightStack) {
+                // Update text area content if sync is needed (e.g. on Undo/Redo)
+                if (editorArea.value !== engineInstance.currentState.text) {
+                    editorArea.value = engineInstance.currentState.text;
+                }
+
+                // Update text stats
+                const text = editorArea.value;
+                const words = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
+                statWords.textContent = `${words} word${words !== 1 ? 's' : ''}`;
+                statChars.textContent = `${text.length} character${text.length !== 1 ? 's' : ''}`;
+
+                // Buttons state
+                btnUndo.disabled = engineInstance.undoStack.length === 0;
+                btnRedo.disabled = engineInstance.redoStack.length === 0;
+
+                // Counter metrics
+                metricUndoCount.textContent = engineInstance.undoStack.length;
+                metricRedoCount.textContent = engineInstance.redoStack.length;
+
+                // Active Pointer Banner
+                const curr = engineInstance.currentState;
+                activePointerDisplay.textContent = `${curr.id} (${curr.text.length} chars)`;
+
+                // 1. Render UNDO STACK (Bottom to Top)
+                renderStackContainer(
+                    undoStackList, 
+                    engineInstance.undoStack, 
+                    'undo', 
+                    'border-cyan-500/40 hover:border-cyan-400 bg-cyan-950/20 text-cyan-200'
+                );
+
+                // 2. Render REDO STACK
+                renderStackContainer(
+                    redoStackList, 
+                    engineInstance.redoStack, 
+                    'redo', 
+                    'border-purple-500/40 hover:border-purple-400 bg-purple-950/20 text-purple-200'
+                );
+
+                // Logging
+                if (lastLogMessage) {
+                    appendLog(lastLogMessage);
+                }
+
+                // Refresh Lucide icons inside stack frames
+                lucide.createIcons();
+            }
+
+            function renderStackContainer(containerElement, stackArray, stackType, styleClasses) {
+                containerElement.innerHTML = '';
+
+                if (stackArray.length === 0) {
+                    containerElement.innerHTML = `<div class="text-center py-8 text-xs text-slate-600 font-mono italic">Stack Empty</div>`;
+                    return;
+                }
+
+                // Render each stack frame card
+                stackArray.forEach((frame, idx) => {
+                    const isTop = idx === stackArray.length - 1;
+                    const frameCard = document.createElement('div');
+                    
+                    frameCard.className = `p-2.5 rounded-md border text-xs font-mono transition-all cursor-pointer relative group animate-push ${styleClasses} ${
+                        isTop ? 'ring-1 ring-cyan-400/50 shadow-md' : 'opacity-80 hover:opacity-100'
+                    }`;
+
+                    const previewText = frame.text.trim() === '' ? '<Empty State>' : (frame.text.substring(0, 24) + (frame.text.length > 24 ? '...' : ''));
+
+                    frameCard.innerHTML = `
+                        <div class="flex items-center justify-between mb-1">
+                            <span class="font-bold flex items-center gap-1 text-[11px]">
+                                ${isTop ? '<i data-lucide="arrow-up-right" class="w-3 h-3 text-cyan-400"></i>' : ''}
+                                ${frame.id}
+                            </span>
+                            <span class="text-[9px] text-slate-400 font-normal">${frame.timestamp}</span>
+                        </div>
+                        <div class="text-slate-300 truncate text-[11px] font-sans italic">
+                            "${escapeHtml(previewText)}"
+                        </div>
+                        <div class="mt-1 flex items-center justify-between text-[9px] text-slate-500">
+                            <span>Idx: #${idx}</span>
+                            <span class="group-hover:text-cyan-300 flex items-center gap-0.5">Inspect <i data-lucide="eye" class="w-2.5 h-2.5"></i></span>
+                        </div>
+                    `;
+
+                    // Click handler to open detail modal
+                    frameCard.addEventListener('click', () => {
+                        openModal(frame, stackType, idx);
+                    });
+
+                    containerElement.appendChild(frameCard);
+                });
+            }
+
+            // --- Debounced Editor Input Events ---
+            editorArea.addEventListener('input', () => {
+                typingIndicator.classList.remove('opacity-0');
+
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => {
+                    typingIndicator.classList.add('opacity-0');
+                    engine.commitState(editorArea.value, 'AUTO_TYPING');
+                }, 800); // 800ms debounce
+            });
+
+            // --- Button Event Handlers ---
+            btnUndo.addEventListener('click', () => {
+                clearTimeout(debounceTimer);
+                typingIndicator.classList.add('opacity-0');
+                engine.undo();
+            });
+
+            btnRedo.addEventListener('click', () => {
+                clearTimeout(debounceTimer);
+                typingIndicator.classList.add('opacity-0');
+                engine.redo();
+            });
+
+            btnSnapshot.addEventListener('click', () => {
+                clearTimeout(debounceTimer);
+                typingIndicator.classList.add('opacity-0');
+                engine.commitState(editorArea.value, 'MANUAL_SNAPSHOT');
+            });
+
+            btnSample.addEventListener('click', () => {
+                clearTimeout(debounceTimer);
+                typingIndicator.classList.add('opacity-0');
+                
+                const nextText = sampleStorySteps[sampleStepIndex % sampleStorySteps.length];
+                sampleStepIndex++;
+                
+                editorArea.value = nextText;
+                engine.commitState(nextText, 'STORY_PRESET');
+            });
+
+            btnClear.addEventListener('click', () => {
+                if (editorArea.value === '') return;
+                editorArea.value = '';
+                engine.commitState('', 'CLEAR');
+            });
+
+            btnClearLog.addEventListener('click', () => {
+                consoleLog.innerHTML = '<div class="text-slate-500 italic">[SYSTEM] Console cleared.</div>';
+            });
+
+            // Keyboard Shortcuts Handler (Ctrl+Z / Ctrl+Y)
+            document.addEventListener('keydown', (e) => {
+                // Ignore keyboard triggers inside other non-editor inputs if any
+                if (e.target !== editorArea && e.target.tagName === 'INPUT') return;
+
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+                    if (e.shiftKey) {
+                        // Ctrl+Shift+Z -> Redo
+                        e.preventDefault();
+                        if (!btnRedo.disabled) engine.redo();
+                    } else {
+                        // Ctrl+Z -> Undo
+                        e.preventDefault();
+                        if (!btnUndo.disabled) engine.undo();
+                    }
+                } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+                    // Ctrl+Y -> Redo
+                    e.preventDefault();
+                    if (!btnRedo.disabled) engine.redo();
+                }
+            });
+
+            // --- Modal Inspection Handlers ---
+            function openModal(frame, stackType, idx) {
+                currentSelectedFrameForModal = frame;
+                modalTitle.textContent = `${stackType.toUpperCase()} Stack Frame Inspection`;
+                modalTimestamp.textContent = frame.timestamp;
+                modalIndex.textContent = `${frame.id} (Depth index #${idx})`;
+                modalContent.textContent = frame.text || '<Blank Empty State>';
+                modal.classList.remove('hidden');
+            }
+
+            btnCloseModal.addEventListener('click', () => {
+                modal.classList.add('hidden');
+            });
+
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.classList.add('hidden');
+            });
+
+            btnRestoreFrame.addEventListener('click', () => {
+                if (currentSelectedFrameForModal) {
+                    engine.jumpToState(currentSelectedFrameForModal);
+                    modal.classList.add('hidden');
+                }
+            });
+
+            // Speed toggle demo element feedback
+            const btnSpeed = document.getElementById('btn-toggle-speed');
+            const speedLabel = document.getElementById('speed-label');
+            let isFast = false;
+            btnSpeed.addEventListener('click', () => {
+                isFast = !isFast;
+                speedLabel.textContent = isFast ? 'Instant Speed' : 'Normal Speed';
+                appendLog(`[SETTING] Execution speed set to ${isFast ? 'FAST (0ms)' : 'NORMAL'}`);
+            });
+
+            // Subscribe Renderer to Stack Engine
+            engine.subscribe(renderStackUI);
+
+            // Initial Kickstart
+            engine.notify("[SYSTEM] LIFO Memory stack ready.");
+        });
+    </script>
+</body>
+</html>
